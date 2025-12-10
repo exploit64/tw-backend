@@ -551,6 +551,10 @@ async def login(credentials: LoginRequest):
         token_type="bearer"
     )
 
+@api_router.get("/version", response_model=Dict[str, str])
+async def get_version() -> Dict[str, str]:
+    return {"version": "1.5.0"}
+
 
 @api_router.get("/info", dependencies=[Depends(verify_token)])
 async def info_get():
@@ -1261,38 +1265,22 @@ async def delete_testplan(test_plan_id: str):
                 )
                 if not exists:
                     raise HTTPException(status_code=404, detail="Test plan not found")
-
-                test_run_rows = await conn.fetch(
-                    "SELECT test_run_id FROM TestRun WHERE test_plan_id = $1",
-                    test_plan_id
-                )
-                test_run_id_list = [row["test_run_id"] for row in test_run_rows]
-
-                if test_run_id_list:
-                    await conn.execute("""
-                        DELETE FROM TestRunFiles
-                        WHERE test_run_id = ANY($1::text[])
-                    """, test_run_id_list)
-
-                    await conn.execute("""
-                        DELETE FROM TestRunTests 
-                        WHERE test_run_id = ANY($1::text[])
-                    """, test_run_id_list)
+                await conn.execute("""
+                    DELETE FROM TestRunFiles
+                    WHERE test_run_id IN (
+                        SELECT test_run_id FROM TestRun WHERE test_plan_id = $1
+                    )
+                """, test_plan_id)
+                await conn.execute("""
+                    DELETE FROM TestRunTests 
+                    WHERE test_run_id IN (
+                        SELECT test_run_id FROM TestRun WHERE test_plan_id = $1
+                    )
+                """, test_plan_id)
                 await conn.execute(
                     "DELETE FROM TestRun WHERE test_plan_id = $1",
                     test_plan_id
                 )
-
-                remaining_runs = await conn.fetchval(
-                    "SELECT COUNT(*) FROM TestRun WHERE test_plan_id = $1",
-                    test_plan_id
-                )
-                if remaining_runs and remaining_runs > 0:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to delete all test runs. Remaining: {remaining_runs}"
-                    )
-
                 await conn.execute(
                     "DELETE FROM TestPlan WHERE test_plan_id = $1",
                     test_plan_id
@@ -1312,6 +1300,7 @@ async def delete_testplan(test_plan_id: str):
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
     return {"status": "deleted"}
+
 
 @api_router.delete("/testplan/{testplan_id}/delete_results", dependencies=[Depends(verify_token)])
 async def delete_test_results_from_testplan(testplan_id: str, request: DeleteTestResultsRequest):
